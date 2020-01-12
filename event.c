@@ -513,6 +513,18 @@ event_base_loop(struct event_base *base, int flags)
 		timeout_correct(base, &tv);
 
 		tv_p = &tv;
+		
+		/**
+		 * @brief 
+		 * 没有事件被触发的时候 计算下一次的超时时间
+		 * 注意这里如果 EVLOOP_NONBLOCK被设置
+		 * 那么肯定会导致tv被设置为0 sec.
+		 * epoll等会立即返回(此时如果没有事件出现 则会退出此事件循环)
+		 * 
+		 * Note:
+		 * 在此时可能存在活跃的未处理的事件 这可能是上一次 `poll`的时候未处理的低优先级事件
+		 * libevent在一次循环中可能只会执行优先级高的回调函数,其余的低优先级的留待以后执行
+		 */
 		if (!base->event_count_active && !(flags & EVLOOP_NONBLOCK)) {
 			timeout_next(base, &tv_p);
 		} else {
@@ -524,6 +536,7 @@ event_base_loop(struct event_base *base, int flags)
 		}
 		
 		/* If we have no events, we just exit */
+		/* 没有事件出现 直接返回 */
 		if (!event_haveevents(base)) {
 			event_debug(("%s: no events registered.", __func__));
 			return (1);
@@ -537,14 +550,17 @@ event_base_loop(struct event_base *base, int flags)
 		/* 清空时间缓存 下一次call gettime()需要调用syscall */
 		base->tv_cache.tv_sec = 0;
 
+		// call for ready io events , like epoll/kqueue etc.
 		res = evsel->dispatch(base, evbase, tv_p);
 
+		// error occured.
 		if (res == -1)
 			return (-1);
 
 		// 更新缓存的时间
 		gettime(base, &base->tv_cache);
 
+		// checkout ready timer and move them to the ready queue.
 		timeout_process(base);
 
 		if (base->event_count_active) {
@@ -552,6 +568,7 @@ event_base_loop(struct event_base *base, int flags)
 			if (!base->event_count_active && (flags & EVLOOP_ONCE))
 				done = 1;
 		} else if (flags & EVLOOP_NONBLOCK)
+			/* libevent在NON-BLOCK模式下 没有活跃事件会立即退出事件循环 */
 			done = 1;
 	}
 
