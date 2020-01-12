@@ -64,8 +64,13 @@ struct event* min_heap_top(min_heap_t* s) { return s->n ? *s->p : 0; }
 
 int min_heap_push(min_heap_t* s, struct event* e)
 {
-    if(min_heap_reserve(s, s->n + 1))
+    // check capacity.
+        if(min_heap_reserve(s, s->n + 1))
         return -1;
+    // now we have enough space.
+    // the index is [0,n-1] if cap is n.
+    // hence the value of n++ ( actually n) is the new index.
+    // now what we need to do is swim up.
     min_heap_shift_up_(s, s->n++, e);
     return 0;
 }
@@ -75,6 +80,8 @@ struct event* min_heap_pop(min_heap_t* s)
     if(s->n)
     {
         struct event* e = *s->p;
+        // reduce cap by one.
+        // turn the last item to the pq top and sink to a proper position.
         min_heap_shift_down_(s, 0u, s->p[--s->n]);
         e->min_heap_idx = -1;
         return e;
@@ -108,6 +115,8 @@ int min_heap_reserve(min_heap_t* s, unsigned n)
     if(s->a < n)
     {
         struct event** p;
+        // heap preallocated size is 8.
+        // a is the capacity prereserved.
         unsigned a = s->a ? s->a * 2 : 8;
         if(a < n)
             a = n;
@@ -121,28 +130,61 @@ int min_heap_reserve(min_heap_t* s, unsigned n)
 
 void min_heap_shift_up_(min_heap_t* s, unsigned hole_index, struct event* e)
 {
+    /**
+     * 1 / 2 == 0 & 2 / 2 == 1
+     * however node 1 and 2 have the same parent node.
+     * (0 and 1) / 2 == 0 , this works properly.
+     */
     unsigned parent = (hole_index - 1) / 2;
+    
+    // 因为这里将待插入的数放在后面,所以使用 `>`
+    // 一般的实现,如`priority_queue` in c++ use less<> as the operator of min pq.
     while(hole_index && min_heap_elem_greater(s->p[parent], e))
     {
+        // move the parent to the child position and update the index
+        // keep the event e until its parent is less than itself.
         (s->p[hole_index] = s->p[parent])->min_heap_idx = hole_index;
+        // to the upper level.
         hole_index = parent;
         parent = (hole_index - 1) / 2;
     }
+    // now the parent is lesser one.
+    // assign to the current position whick is fact the preserve the previous parent value.
+    // textbook implement.
     (s->p[hole_index] = e)->min_heap_idx = hole_index;
 }
 
 void min_heap_shift_down_(min_heap_t* s, unsigned hole_index, struct event* e)
 {
+    // 右子节点的index
+    // should point to the smallest child node.
     unsigned min_child = 2 * (hole_index + 1);
+
+    // example. n = 5
+    //       0 
+    //      / |
+    //      1 2
+    //     /| | 
+    //    3 4 5
     while(min_child <= s->n)
 	{
+        // min_child == s->n indicate that the right child doesn't exists.
+        // hence we just need to check the left child.
+        // or we need to pick up the smaller one to be compared.
+        // saying if right node > left node , we need to minus one.
         min_child -= min_child == s->n || min_heap_elem_greater(s->p[min_child], s->p[min_child - 1]);
+        // if e <= smallest child , the heap is in order.
         if(!(min_heap_elem_greater(e, s->p[min_child])))
             break;
+        // else move the child to hole_index
+        // similar to min_heap_shift_up_
         (s->p[hole_index] = s->p[min_child])->min_heap_idx = hole_index;
         hole_index = min_child;
         min_child = 2 * (hole_index + 1);
 	}
+    // note that when we break the loop , we didn't put the new node e in proper position.
+    // this function call just assign event e to its position.
+    // the function will stop the first time it run to the while loop as the FALSE is doomed.
     min_heap_shift_up_(s, hole_index,  e);
 }
 
