@@ -508,8 +508,8 @@ event_base_loop(struct event_base *base, int flags)
 		}
 		// the first time we go to there we need to call gettime one time for 
 		// there is no cached time available.
-		// later after the first loop at the end of this loop cached time will 
-		// be cleaned again , so we will need to get time from os syscall anyway.
+		
+		// tv indicate time when last poll completed thanks to the cached_time in base.
 		timeout_correct(base, &tv);
 
 		tv_p = &tv;
@@ -557,7 +557,8 @@ event_base_loop(struct event_base *base, int flags)
 		if (res == -1)
 			return (-1);
 
-		// 更新缓存的时间
+		// 更新缓存的时间 这个时间用于接下来下一次循环的时候获得时间 即tag getime
+		// 以及接下来用于处理超时事件
 		gettime(base, &base->tv_cache);
 
 		// checkout ready timer and move them to the ready queue.
@@ -878,21 +879,24 @@ timeout_next(struct event_base *base, struct timeval **tv_p)
 	struct timeval now;
 	struct event *ev;
 	struct timeval *tv = *tv_p;
-
+	
+	// 获取此时最可能超时的定时器 以及 错误处理
 	if ((ev = min_heap_top(&base->timeheap)) == NULL) {
 		/* if no time-based events are active wait for I/O */
 		*tv_p = NULL;
 		return (0);
 	}
-
+	// 获取的是缓存的时间
 	if (gettime(base, &now) == -1)
 		return (-1);
-
+	// 如果
 	if (evutil_timercmp(&ev->ev_timeout, &now, <=)) {
 		evutil_timerclear(tv);
 		return (0);
 	}
-
+	// 定时器此次循环不会超时 
+	// 此时计算我们需要传给 `epoll etc`的超时时间
+	// 堆顶event的超时时间 - now
 	evutil_timersub(&ev->ev_timeout, &now, tv);
 
 	assert(tv->tv_sec >= 0);
@@ -919,8 +923,11 @@ timeout_correct(struct event_base *base, struct timeval *tv)
 		return;
 
 	/* Check if time is running backwards */
-	/* will not use cached time for cached time is cleaned */
+	/* will use cached time , the cached time is the time when last poll is completed 
+	 * this time will be used to calculate the timeout of `epoll etc`.
+	 */
 	gettime(base, tv);
+	// tv is the time last poll completed.
 	// if the event time <= current time ,just return.
 	if (evutil_timercmp(tv, &base->event_tv, >=)) {
 		base->event_tv = *tv;
@@ -961,12 +968,13 @@ timeout_process(struct event_base *base)
 {
 	struct timeval now;
 	struct event *ev;
-
+	//没有定时器
 	if (min_heap_empty(&base->timeheap))
 		return;
-
+	// 此次poll完成的时间
 	gettime(base, &now);
 
+	//超时事件在堆顶 循环直到堆顶大于当前时间
 	while ((ev = min_heap_top(&base->timeheap))) {
 		if (evutil_timercmp(&ev->ev_timeout, &now, >))
 			break;
@@ -976,6 +984,7 @@ timeout_process(struct event_base *base)
 
 		event_debug(("timeout_process: call %p",
 			 ev->ev_callback));
+		// 增加此定时器超时事件
 		event_active(ev, EV_TIMEOUT, 1);
 	}
 }
