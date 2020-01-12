@@ -506,7 +506,9 @@ event_base_loop(struct event_base *base, int flags)
 				}
 			}
 		}
-
+		// the first time we go to there we need to call gettime onetime for 
+		// there is no cached time available.
+		// later cause 
 		timeout_correct(base, &tv);
 
 		tv_p = &tv;
@@ -527,15 +529,19 @@ event_base_loop(struct event_base *base, int flags)
 		}
 
 		/* update last old time */
+		/* 将上一次获得的时间赋给 event_tv */
 		gettime(base, &base->event_tv);
 
 		/* clear time cache */
+		/* 清空时间缓存 下一次call gettime()需要调用syscall */
 		base->tv_cache.tv_sec = 0;
 
 		res = evsel->dispatch(base, evbase, tv_p);
 
 		if (res == -1)
 			return (-1);
+
+		// 更新缓存的时间
 		gettime(base, &base->tv_cache);
 
 		timeout_process(base);
@@ -895,7 +901,9 @@ timeout_correct(struct event_base *base, struct timeval *tv)
 		return;
 
 	/* Check if time is running backwards */
+	/* will not use cached time for cached time is cleaned */
 	gettime(base, tv);
+	// if the event time <= current time ,just return.
 	if (evutil_timercmp(tv, &base->event_tv, >=)) {
 		base->event_tv = *tv;
 		return;
@@ -903,12 +911,22 @@ timeout_correct(struct event_base *base, struct timeval *tv)
 
 	event_debug(("%s: time is running backwards, corrected",
 		    __func__));
+
+	// 原因一般为用户将系统时间向前调整了
+	// 获得base时间与tv获得的系统时间相比快了多少
 	evutil_timersub(&base->event_tv, tv, &off);
 
 	/*
 	 * We can modify the key element of the node without destroying
 	 * the key, beause we apply it to all in the right order.
 	 */
+	/**
+	 * 现在base的时间比系统时间快,此时定时器的时间过长了
+	 * 比如base 14:00 timer 10min
+	 * gettime() 获得时间 13:55 那么此时我们需要将时间减去(14:00 - 13:55) = 5min
+	 * 即 timer调整为 5min
+	 * 小/大顶堆同时增减 value x,堆依然有效
+	 */ 
 	pev = base->timeheap.p;
 	size = base->timeheap.n;
 	for (; size-- > 0; ++pev) {
@@ -916,6 +934,7 @@ timeout_correct(struct event_base *base, struct timeval *tv)
 		evutil_timersub(ev_tv, &off, ev_tv);
 	}
 	/* Now remember what the new time turned out to be. */
+	/* 更新当前的系统时间 */
 	base->event_tv = *tv;
 }
 

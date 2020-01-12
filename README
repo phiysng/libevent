@@ -1,3 +1,5 @@
+# libevent annotated version by phiysng
+
 To build libevent, type
 
 $ ./configure && make
