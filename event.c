@@ -506,9 +506,10 @@ event_base_loop(struct event_base *base, int flags)
 				}
 			}
 		}
-		// the first time we go to there we need to call gettime onetime for 
+		// the first time we go to there we need to call gettime one time for 
 		// there is no cached time available.
-		// later cause 
+		// later after the first loop at the end of this loop cached time will 
+		// be cleaned again , so we will need to get time from os syscall anyway.
 		timeout_correct(base, &tv);
 
 		tv_p = &tv;
