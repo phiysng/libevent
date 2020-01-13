@@ -113,15 +113,17 @@ evsignal_init(struct event_base *base)
 #endif
 		return -1;
 	}
-
+	// close on exec, that's say this fd will be closed on parent when fork or etc happened.
 	FD_CLOSEONEXEC(base->sig.ev_signal_pair[0]);
 	FD_CLOSEONEXEC(base->sig.ev_signal_pair[1]);
 	base->sig.sh_old = NULL;
 	base->sig.sh_old_max = 0;
 	base->sig.evsignal_caught = 0;
+	// map<int,int> : signum -> freq 记录SIGNAL出现的次数
 	memset(&base->sig.evsigcaught, 0, sizeof(sig_atomic_t)*NSIG);
 	/* initialize the queues for all events */
 	for (i = 0; i < NSIG; ++i)
+		// 初始化尾队列数据结构
 		TAILQ_INIT(&base->sig.evsigevents[i]);
 
         evutil_make_socket_nonblocking(base->sig.ev_signal_pair[0]);
@@ -200,6 +202,7 @@ _evsignal_set_handler(struct event_base *base,
 	return (0);
 }
 
+// called by epollop etc.
 int
 evsignal_add(struct event *ev)
 {
@@ -207,6 +210,7 @@ evsignal_add(struct event *ev)
 	struct event_base *base = ev->ev_base;
 	struct evsignal_info *sig = &ev->ev_base->sig;
 
+	/* EV_SIGNAL 不能与EV_WRITE EV_READ一起使用 */
 	if (ev->ev_events & (EV_READ|EV_WRITE))
 		event_errx(1, "%s: EV_SIGNAL incompatible use", __func__);
 	evsignal = EVENT_SIGNAL(ev);
@@ -220,6 +224,7 @@ evsignal_add(struct event *ev)
 		/* catch signals if they happen quickly */
 		evsignal_base = base;
 
+		// FIXME: 将signal 注册进事件循环
 		if (!sig->ev_signal_added) {
 			if (event_add(&sig->ev_signal, NULL))
 				return (-1);
@@ -233,6 +238,13 @@ evsignal_add(struct event *ev)
 	return (0);
 }
 
+/**
+ * @brief restore handler from sig->sh_old[]
+ * 
+ * @param base event_base
+ * @param evsignal signum
+ * @return int 0 on success , -1 on failure.
+ */
 int
 _evsignal_restore_handler(struct event_base *base, int evsignal)
 {
@@ -273,8 +285,9 @@ evsignal_del(struct event *ev)
 	assert(evsignal >= 0 && evsignal < NSIG);
 
 	/* multiple events may listen to the same signal */
+	/* 从 sig->evsigevents[evsignal] 删除当前事件ev */
 	TAILQ_REMOVE(&sig->evsigevents[evsignal], ev, ev_signal_next);
-
+	//信号队列非空 直接返回
 	if (!TAILQ_EMPTY(&sig->evsigevents[evsignal]))
 		return (0);
 
@@ -294,7 +307,7 @@ evsignal_handler(int sig)
 			__func__, sig);
 		return;
 	}
-
+	// 记录产生的信号
 	evsignal_base->sig.evsigcaught[sig]++;
 	evsignal_base->sig.evsignal_caught = 1;
 
@@ -303,6 +316,7 @@ evsignal_handler(int sig)
 #endif
 
 	/* Wake up our notification mechanism */
+	/* 向socketpair的写端写数据 读端注册在epoll里 */
 	send(evsignal_base->sig.ev_signal_pair[0], "a", 1, 0);
 	errno = save_errno;
 }
@@ -316,6 +330,7 @@ evsignal_process(struct event_base *base)
 	int i;
 	
 	base->sig.evsignal_caught = 0;
+	/* 遍历数组 找出发生的信号与出现的次数 */
 	for (i = 1; i < NSIG; ++i) {
 		ncalls = sig->evsigcaught[i];
 		if (ncalls == 0)
@@ -325,7 +340,7 @@ evsignal_process(struct event_base *base)
 		for (ev = TAILQ_FIRST(&sig->evsigevents[i]);
 		    ev != NULL; ev = next_ev) {
 			next_ev = TAILQ_NEXT(ev, ev_signal_next);
-			if (!(ev->ev_events & EV_PERSIST))
+			if (!(ev->ev_events & EV_PERSIST)) //whether it is persist signal.
 				event_del(ev);
 			event_active(ev, EV_SIGNAL, ncalls);
 		}

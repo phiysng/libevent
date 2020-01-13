@@ -222,6 +222,7 @@ event_base_new(void)
 	return (base);
 }
 
+/* TODO: to be read. */
 void
 event_base_free(struct event_base *base)
 {
@@ -447,6 +448,9 @@ event_base_dispatch(struct event_base *event_base)
   return (event_base_loop(event_base, 0));
 }
 
+/**
+ * get backend of your platform.
+ */ 
 const char *
 event_base_get_method(struct event_base *base)
 {
@@ -653,6 +657,7 @@ event_base_once(struct event_base *base, int fd, short events,
 	int res;
 
 	/* We cannot support signals that just fire once */
+	/* 我们无法支持只激活一次的信号 */
 	if (events & EV_SIGNAL)
 		return (-1);
 
@@ -661,7 +666,7 @@ event_base_once(struct event_base *base, int fd, short events,
 
 	eonce->cb = callback;
 	eonce->arg = arg;
-
+	/* timer默认只激活一次 */
 	if (events == EV_TIMEOUT) {
 		if (tv == NULL) {
 			evutil_timerclear(&etv);
@@ -695,6 +700,9 @@ event_set(struct event *ev, int fd, short events,
 	  void (*callback)(int, short, void *), void *arg)
 {
 	/* Take the current base - caller needs to set the real base later */
+	/* 默认分配current_base
+	 * 调用者需要去设置其真正想设置的base.
+	 */
 	ev->ev_base = current_base;
 
 	ev->ev_callback = callback;
@@ -717,6 +725,7 @@ int
 event_base_set(struct event_base *base, struct event *ev)
 {
 	/* Only innocent events may be assigned to a different base */
+	/* 只有`纯洁`的ev会被分配给一个不同的event_base */
 	if (ev->ev_flags != EVLIST_INIT)
 		return (-1);
 
@@ -729,13 +738,17 @@ event_base_set(struct event_base *base, struct event *ev)
 /*
  * Set's the priority of an event - if an event is already scheduled
  * changing the priority is going to fail.
+ * 
+ * 更改ev的pri,如果ev已经被调度,更改优先级会失败
  */
 
 int
 event_priority_set(struct event *ev, int pri)
 {
+	/* ev is running , so it shall fail */
 	if (ev->ev_flags & EVLIST_ACTIVE)
 		return (-1);
+	/* invalid priority */
 	if (pri < 0 || pri >= ev->ev_base->nactivequeues)
 		return (-1);
 
@@ -797,15 +810,26 @@ event_add(struct event *ev, const struct timeval *tv)
 	 * prepare for timeout insertion further below, if we get a
 	 * failure on any step, we should not change any state.
 	 */
+	/*
+	 * 为下面的超时插入做准备, 如果我们在任何一个步骤失败,那么不应该改变库的
+	 * 任何状态
+	 */ 
 	if (tv != NULL && !(ev->ev_flags & EVLIST_TIMEOUT)) {
 		if (min_heap_reserve(&base->timeheap,
 			1 + min_heap_size(&base->timeheap)) == -1)
 			return (-1);  /* ENOMEM == errno */
 	}
-
+	
+	/**
+	 * events shall in EV_READ|EV_WRITE|EV_SIGNAL
+	 * and ev shall not in EVLIST_INSERTED|EVLIST_ACTIVE
+	 * 即ev待注册的信号有效 且 ev没有被注册过
+	 */
 	if ((ev->ev_events & (EV_READ|EV_WRITE|EV_SIGNAL)) &&
 	    !(ev->ev_flags & (EVLIST_INSERTED|EVLIST_ACTIVE))) {
+		// register in epoll.
 		res = evsel->add(evbase, ev);
+		// add to event queue.
 		if (res != -1)
 			event_queue_insert(base, ev, EVLIST_INSERTED);
 	}
@@ -813,6 +837,7 @@ event_add(struct event *ev, const struct timeval *tv)
 	/* 
 	 * we should change the timout state only if the previous event
 	 * addition succeeded.
+	 * 我们只会在上面的步骤都成功才更改超时状态(min_pq)
 	 */
 	if (res != -1 && tv != NULL) {
 		struct timeval now;
@@ -820,13 +845,20 @@ event_add(struct event *ev, const struct timeval *tv)
 		/* 
 		 * we already reserved memory above for the case where we
 		 * are not replacing an exisiting timeout.
+		 * 我们已经在上面预留min_pq的内存(位置)了
+		 * 
+		 * 删除事件如果事件存在于超时队列中
 		 */
 		if (ev->ev_flags & EVLIST_TIMEOUT)
 			event_queue_remove(base, ev, EVLIST_TIMEOUT);
 
 		/* Check if it is active due to a timeout.  Rescheduling
 		 * this timeout before the callback can be executed
-		 * removes it from the active list. */
+		 * removes it from the active list. 
+		 * 检查是否因为超时这个ev被放入活跃队列.
+		 * 在回调函数可以被执行之前重新调度这个超时
+		 * 从活跃队列删除ev.
+		 * */
 		if ((ev->ev_flags & EVLIST_ACTIVE) &&
 		    (ev->ev_res & EV_TIMEOUT)) {
 			/* See if we are just active executing this
@@ -841,12 +873,13 @@ event_add(struct event *ev, const struct timeval *tv)
 		}
 
 		gettime(base, &now);
+		/* calculate timeout time from now on. */
 		evutil_timeradd(&now, tv, &ev->ev_timeout);
 
 		event_debug((
 			 "event_add: timeout in %ld seconds, call %p",
 			 tv->tv_sec, ev->ev_callback));
-
+		/* 加入超时队列 等待超时事件被触发 */
 		event_queue_insert(base, ev, EVLIST_TIMEOUT);
 	}
 
@@ -874,6 +907,7 @@ event_del(struct event *ev)
 	assert(!(ev->ev_flags & ~EVLIST_ALL));
 
 	/* See if we are just active executing this event in a loop */
+	/* 看看我们是否正在一个循环里活跃执行这个事件 */
 	if (ev->ev_ncalls && ev->ev_pncalls) {
 		/* Abort loop */
 		*ev->ev_pncalls = 0;
@@ -897,6 +931,7 @@ void
 event_active(struct event *ev, int res, short ncalls)
 {
 	/* We get different kinds of events, add them together */
+	/* 对于已经激活的ev , 将res -> ev_res */
 	if (ev->ev_flags & EVLIST_ACTIVE) {
 		ev->ev_res |= res;
 		return;
@@ -1034,7 +1069,7 @@ event_queue_remove(struct event_base *base, struct event *ev, int queue)
 
 	if (~ev->ev_flags & EVLIST_INTERNAL)
 		base->event_count--;
-
+	// 从ev_flags删除待删除的queue flag.
 	ev->ev_flags &= ~queue;
 	switch (queue) {
 	case EVLIST_INSERTED:
@@ -1053,14 +1088,24 @@ event_queue_remove(struct event_base *base, struct event *ev, int queue)
 	}
 }
 
+/**
+ * @brief 添加ev至指定的队列
+ * 
+ * @param base event_base
+ * @param ev event to be added
+ * @param queue specified queue.
+ */
 void
 event_queue_insert(struct event_base *base, struct event *ev, int queue)
 {
 	if (ev->ev_flags & queue) {
 		/* Double insertion is possible for active events */
+		/* 对于激活队列 允许其再次插入同一个事件 
+		 * FIXME: really🐶? just return back. -_-.
+		 */
 		if (queue & EVLIST_ACTIVE)
 			return;
-
+		/* report error on second insert */
 		event_errx(1, "%s: %p(fd %d) already on queue %x", __func__,
 			   ev, ev->ev_fd, queue);
 	}
@@ -1068,17 +1113,26 @@ event_queue_insert(struct event_base *base, struct event *ev, int queue)
 	if (~ev->ev_flags & EVLIST_INTERNAL)
 		base->event_count++;
 
+	// update flags to show that ev is in this queue(s).
 	ev->ev_flags |= queue;
+	/**
+	 * libevent内部存在
+	 * - 包含所有ev的队列
+	 * - 激活队列: 完成IO的event,timeout timer ,etc.
+	 * - 超时队列: 存在超时时间的队列
+	 */  
 	switch (queue) {
 	case EVLIST_INSERTED:
 		TAILQ_INSERT_TAIL(&base->eventqueue, ev, ev_next);
 		break;
 	case EVLIST_ACTIVE:
+		// increase event count.
 		base->event_count_active++;
 		TAILQ_INSERT_TAIL(base->activequeues[ev->ev_pri],
 		    ev,ev_active_next);
 		break;
 	case EVLIST_TIMEOUT: {
+		// push to min_pq.
 		min_heap_push(&base->timeheap, ev);
 		break;
 	}

@@ -224,9 +224,11 @@ epoll_dispatch(struct event_base *base, void *arg, struct timeval *tv)
 			return (-1);
 		}
 		/* interrupted by signal. */
+		/* errno == EINT epoll syscall被信号终端 */
 		evsignal_process(base);
 		return (0);
 	} else if (base->sig.evsignal_caught) {
+		// 捕获了信号
 		evsignal_process(base);
 	}
 

@@ -34,6 +34,7 @@ struct evsignal_info {
 	int ev_signal_pair[2];
 	int ev_signal_added;
 	volatile sig_atomic_t evsignal_caught;
+	// 尾队列的头节点们
 	struct event_list evsigevents[NSIG];
 	sig_atomic_t evsigcaught[NSIG];
 #ifdef HAVE_SIGACTION

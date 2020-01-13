@@ -253,6 +253,13 @@ struct event_list;
 struct evkeyvalq;
 #undef _EVENT_DEFINED_TQENTRY
 #else
+/**
+ *  FIXME: tail queue from bsd queue.h 
+ *  带头结点的双向链表
+ *  ref: http://www.hyuuhit.com/2018/03/01/Tail-queue-%E5%B0%BE%E9%98%9F%E5%88%97/
+ *  定义了头节点结构体
+ */
+
 TAILQ_HEAD (event_list, event);
 TAILQ_HEAD (evkeyvalq, evkeyval);
 #endif /* _EVENT_DEFINED_TQENTRY */
