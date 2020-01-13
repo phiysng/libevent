@@ -406,10 +406,11 @@ event_process_active(struct event_base *base)
 		}
 	}
 
-	// 此时应该存在
+	// 此时应该存在非空的活跃事件队列
 	assert(activeq != NULL);
 
 	for (ev = TAILQ_FIRST(activeq); ev; ev = TAILQ_FIRST(activeq)) {
+		// PERSIST事件依然继续监听 只从AVTIVE QUEUE移除
 		if (ev->ev_events & EV_PERSIST)
 			event_queue_remove(base, ev, EVLIST_ACTIVE);
 		else
@@ -418,6 +419,8 @@ event_process_active(struct event_base *base)
 		/* Allows deletes to work */
 		ncalls = ev->ev_ncalls;
 		ev->ev_pncalls = &ncalls;
+
+		// 调用回调函数
 		while (ncalls) {
 			ncalls--;
 			ev->ev_ncalls = ncalls;
