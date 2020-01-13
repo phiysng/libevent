@@ -104,6 +104,7 @@ const struct eventop epollops = {
  */
 #define MAX_EPOLL_TIMEOUT_MSEC (35*60*1000)
 
+/* epoll ctor */
 static void *
 epoll_init(struct event_base *base)
 {
@@ -126,7 +127,7 @@ epoll_init(struct event_base *base)
 	}
 
 	/* Initalize the kernel queue */
-
+	/* 创建epoll实例 */
 	if ((epfd = epoll_create(nfiles)) == -1) {
 		if (errno != ENOSYS)
 			event_warn("epoll_create");
@@ -134,7 +135,7 @@ epoll_init(struct event_base *base)
 	}
 
 	FD_CLOSEONEXEC(epfd);
-
+	// 存储数据成员
 	if (!(epollop = calloc(1, sizeof(struct epollop))))
 		return (NULL);
 
@@ -147,7 +148,7 @@ epoll_init(struct event_base *base)
 		return (NULL);
 	}
 	epollop->nevents = nfiles;
-
+	// 存储读/写事件指针
 	epollop->fds = calloc(nfiles, sizeof(struct evepoll));
 	if (epollop->fds == NULL) {
 		free(epollop->events);
@@ -155,7 +156,7 @@ epoll_init(struct event_base *base)
 		return (NULL);
 	}
 	epollop->nfds = nfiles;
-
+	//初始化信号句柄
 	evsignal_init(base);
 
 	return (epollop);
@@ -180,6 +181,8 @@ epoll_recalc(struct event_base *base, void *arg, int max)
 			return (-1);
 		}
 		epollop->fds = fds;
+		// 清空新分配的内存
+		// evread == evwrite == NULL
 		memset(fds + epollop->nfds, 0,
 		    (nfds - epollop->nfds) * sizeof(struct evepoll));
 		epollop->nfds = nfds;
@@ -187,11 +190,19 @@ epoll_recalc(struct event_base *base, void *arg, int max)
 
 	return (0);
 }
-
+/**
+ * @brief poll with epoll backend
+ * 
+ * @param base corresponding event_base.
+ * @param arg data used by epollops
+ * @param tv timeout time.
+ * @return int 0 on success , -1 on failure.
+ */
 static int
 epoll_dispatch(struct event_base *base, void *arg, struct timeval *tv)
 {
 	struct epollop *epollop = arg;
+	//所有的监听的事件
 	struct epoll_event *events = epollop->events;
 	struct evepoll *evep;
 	int i, res, timeout = -1;
@@ -212,7 +223,7 @@ epoll_dispatch(struct event_base *base, void *arg, struct timeval *tv)
 			event_warn("epoll_wait");
 			return (-1);
 		}
-
+		/* interrupted by signal. */
 		evsignal_process(base);
 		return (0);
 	} else if (base->sig.evsignal_caught) {
@@ -220,7 +231,9 @@ epoll_dispatch(struct event_base *base, void *arg, struct timeval *tv)
 	}
 
 	event_debug(("%s: epoll_wait reports %d", __func__, res));
-
+	/**
+	 * 遍历获得的res个事件
+	 */
 	for (i = 0; i < res; i++) {
 		int what = events[i].events;
 		struct event *evread = NULL, *evwrite = NULL;
@@ -230,22 +243,29 @@ epoll_dispatch(struct event_base *base, void *arg, struct timeval *tv)
 			continue;
 		evep = &epollop->fds[fd];
 
+		// EPOLLHUP EPOLLERR时激活读写事件
+		// 读写都可以探测出对端关闭/出错
 		if (what & (EPOLLHUP|EPOLLERR)) {
 			evread = evep->evread;
 			evwrite = evep->evwrite;
 		} else {
+			// readable event.
 			if (what & EPOLLIN) {
 				evread = evep->evread;
 			}
-
+			// writeable event
+			// 读写事件不互斥
 			if (what & EPOLLOUT) {
 				evwrite = evep->evwrite;
 			}
 		}
-
+		// TODO: defensive programming? or it is possible to be NEITHER Readable Writeable,HUP and ERR?
+		
 		if (!(evread||evwrite))
 			continue;
-
+		/**
+		 * 添加到 读/写 队列
+		 */ 
 		if (evread != NULL)
 			event_active(evread, EV_READ, 1);
 		if (evwrite != NULL)
@@ -263,11 +283,12 @@ epoll_add(void *arg, struct event *ev)
 	struct epoll_event epev = {0, {0}};
 	struct evepoll *evep;
 	int fd, op, events;
-
+	/* 将信号整合进 io multiplexing接口 */
 	if (ev->ev_events & EV_SIGNAL)
 		return (evsignal_add(ev));
 
 	fd = ev->ev_fd;
+	// fd无法被当前[0,nfds)包含 则需要扩容
 	if (fd >= epollop->nfds) {
 		/* Extent the file descriptor array as necessary */
 		if (epoll_recalc(ev->ev_base, epollop, fd) == -1)
@@ -276,6 +297,10 @@ epoll_add(void *arg, struct event *ev)
 	evep = &epollop->fds[fd];
 	op = EPOLL_CTL_ADD;
 	events = 0;
+	/**
+	 * evep->evread != NULL 意味着这个事件已经注册到了此epoll instance
+	 * op 需要设为 EPOLL_CTL_MOD
+	 */
 	if (evep->evread != NULL) {
 		events |= EPOLLIN;
 		op = EPOLL_CTL_MOD;
@@ -284,7 +309,7 @@ epoll_add(void *arg, struct event *ev)
 		events |= EPOLLOUT;
 		op = EPOLL_CTL_MOD;
 	}
-
+	/* 抽取 interest events */
 	if (ev->ev_events & EV_READ)
 		events |= EPOLLIN;
 	if (ev->ev_events & EV_WRITE)
@@ -292,10 +317,16 @@ epoll_add(void *arg, struct event *ev)
 
 	epev.data.fd = fd;
 	epev.events = events;
+	/* epoll interface , do real work */
 	if (epoll_ctl(epollop->epfd, op, ev->ev_fd, &epev) == -1)
 			return (-1);
 
 	/* Update events responsible */
+	/* 
+	 * 更新fds[]所维护的 fd->(evread : event , evwrite : event)之间的映射
+	 * TODO: 这个实现似乎是因为epoll不允许捎带数据 参照kqueue验证自己的想法
+	 * 无则新增 有则更新
+	 */
 	if (ev->ev_events & EV_READ)
 		evep->evread = ev;
 	if (ev->ev_events & EV_WRITE)
@@ -317,19 +348,33 @@ epoll_del(void *arg, struct event *ev)
 		return (evsignal_del(ev));
 
 	fd = ev->ev_fd;
+	// fd not registered.
 	if (fd >= epollop->nfds)
 		return (0);
 	evep = &epollop->fds[fd];
-
+	
+	/* 注意默认是 DEL */
 	op = EPOLL_CTL_DEL;
 	events = 0;
-
+	/* 抽取准备删除的事件 */
 	if (ev->ev_events & EV_READ)
 		events |= EPOLLIN;
 	if (ev->ev_events & EV_WRITE)
 		events |= EPOLLOUT;
+	/* event是 读/写事件之一 应该不会什么也没有 */
 
+	/**
+	 * 如果事件存在R&W事件 且删除其中一个事件 则调用 CTL
+	 * 否则(存在R&W && 删除全部两个事件 || 存在一个事件(R || W ) 删除这个事件) 此时调用DEL
+	 * 
+	 */
 	if ((events & (EPOLLIN|EPOLLOUT)) != (EPOLLIN|EPOLLOUT)) {
+		/* 只删除读事件 且写事件也存在 
+		 * evep->evwrite != NULL -> 写事件存在
+		 * 此时调用 EPOLL_CTL_MOD 将原来的事件覆盖为EPOLLOUT
+		 * 
+		 * 对应的 只删除写事件 也是将原来的事件覆盖为EPOLLIN
+		 */
 		if ((events & EPOLLIN) && evep->evwrite != NULL) {
 			needwritedelete = 0;
 			events = EPOLLOUT;
@@ -344,6 +389,7 @@ epoll_del(void *arg, struct event *ev)
 	epev.events = events;
 	epev.data.fd = fd;
 
+	/* clear corresponding map */
 	if (needreaddelete)
 		evep->evread = NULL;
 	if (needwritedelete)
@@ -355,6 +401,7 @@ epoll_del(void *arg, struct event *ev)
 	return (0);
 }
 
+/* epoll dtor */
 static void
 epoll_dealloc(struct event_base *base, void *arg)
 {
