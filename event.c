@@ -124,6 +124,7 @@ static int	timeout_next(struct event_base *, struct timeval **);
 static void	timeout_process(struct event_base *);
 static void	timeout_correct(struct event_base *, struct timeval *);
 
+// 全局变量作为标志
 static void
 detect_monotonic(void)
 {
@@ -159,6 +160,10 @@ gettime(struct event_base *base, struct timeval *tp)
 	return (evutil_gettimeofday(tp, NULL));
 }
 
+/*
+ * init event_base base.
+ * call event_base_new inside.
+ */
 struct event_base *
 event_init(void)
 {
@@ -175,7 +180,7 @@ event_base_new(void)
 {
 	int i;
 	struct event_base *base;
-
+	// allocate memory.
 	if ((base = calloc(1, sizeof(struct event_base))) == NULL)
 		event_err(1, "%s: calloc", __func__);
 
@@ -185,11 +190,17 @@ event_base_new(void)
 	detect_monotonic();
 	gettime(base, &base->event_tv);
 	
+	// timer min_pq.
 	min_heap_ctor(&base->timeheap);
+	//初始化事件队列
 	TAILQ_INIT(&base->eventqueue);
 	base->sig.ev_signal_pair[0] = -1;
 	base->sig.ev_signal_pair[1] = -1;
 	
+	/* 选择IO多路复用机制
+	 * Linux->epoll
+	 * FreeBSD->kqueue
+ 	 */
 	base->evbase = NULL;
 	for (i = 0; eventops[i] && !base->evbase; i++) {
 		base->evsel = eventops[i];
@@ -205,6 +216,7 @@ event_base_new(void)
 			   base->evsel->name);
 
 	/* allocate a single active event queue */
+	/* 只分配一个活跃事件队列 */
 	event_base_priority_init(base, 1);
 
 	return (base);
@@ -320,10 +332,17 @@ int
 event_base_priority_init(struct event_base *base, int npriorities)
 {
 	int i;
-
+	/* 已经存在活跃的事件 则直接错误退出
+	 * 应该是因为后面的操作有可能会销毁现存的队列再创建
+	 */
 	if (base->event_count_active)
 		return (-1);
-
+	/**
+	 * 如果存在激活队列且 队列数量不等于 npriorities
+	 * 释放之前分配的队列
+	 * activequeues **指针 保存*指针
+	 * activequeues[i] *指针
+	 */ 
 	if (base->nactivequeues && npriorities != base->nactivequeues) {
 		for (i = 0; i < base->nactivequeues; ++i) {
 			free(base->activequeues[i]);
@@ -333,11 +352,15 @@ event_base_priority_init(struct event_base *base, int npriorities)
 
 	/* Allocate our priority queues */
 	base->nactivequeues = npriorities;
+	// activequeues数组保存指针,指针指向event_list.
 	base->activequeues = (struct event_list **)calloc(base->nactivequeues,
 	    npriorities * sizeof(struct event_list *));
 	if (base->activequeues == NULL)
 		event_err(1, "%s: calloc", __func__);
 
+	/*
+	 * 分配(1-n)个队列所占的空间
+	 */
 	for (i = 0; i < base->nactivequeues; ++i) {
 		base->activequeues[i] = malloc(sizeof(struct event_list));
 		if (base->activequeues[i] == NULL)
@@ -359,7 +382,15 @@ event_haveevents(struct event_base *base)
  * process before higher priorities.  Low priority events can starve high
  * priority ones.
  */
-
+/**
+ * 所谓的优先级队列(就是n个队列 每个队列中储存优先级相同的事件)
+ * 有可能存在多个队列 优先级不同
+ * 总是先执行数字低(优先级高)的事件 上面的注释意思其实有点迷
+ * 优先级低的进程有可能会长时间得不到处理
+ * 
+ * TODO: 注意区分优先级 与 指代优先级的数量 
+ * 优先级的数字越小 优先级越高
+ */ 
 static void
 event_process_active(struct event_base *base)
 {
@@ -367,7 +398,7 @@ event_process_active(struct event_base *base)
 	struct event_list *activeq = NULL;
 	int i;
 	short ncalls;
-
+	// 获得当前最靠前的非空队列 <- 优先级最高
 	for (i = 0; i < base->nactivequeues; ++i) {
 		if (TAILQ_FIRST(base->activequeues[i]) != NULL) {
 			activeq = base->activequeues[i];
@@ -375,6 +406,7 @@ event_process_active(struct event_base *base)
 		}
 	}
 
+	// 此时应该存在
 	assert(activeq != NULL);
 
 	for (ev = TAILQ_FIRST(activeq); ev; ev = TAILQ_FIRST(activeq)) {
@@ -889,7 +921,8 @@ timeout_next(struct event_base *base, struct timeval **tv_p)
 	// 获取的是缓存的时间
 	if (gettime(base, &now) == -1)
 		return (-1);
-	// 如果
+
+	// 此定时器此时已经超时了 会将tv 即poll timeout 设为 0, poll会立即返回 然后处理超时事件
 	if (evutil_timercmp(&ev->ev_timeout, &now, <=)) {
 		evutil_timerclear(tv);
 		return (0);
